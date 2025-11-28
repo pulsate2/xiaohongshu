@@ -62,6 +62,7 @@ class WebDAVSyncHandler(FileSystemEventHandler):
         if local_file_path in self.syncing:
             return
 
+        remote_file_path = None
         try:
             self.syncing.add(local_file_path)
             remote_file_path = self.get_remote_path(local_file_path)
@@ -80,9 +81,20 @@ class WebDAVSyncHandler(FileSystemEventHandler):
             logger.info(f"✓ Successfully uploaded: {Path(local_file_path).name}")
 
         except Exception as e:
+            # 某些 WebDAV 服务器会返回 403 但文件实际已上传成功
+            # 尝试验证文件是否真的上传了
+            try:
+                if remote_file_path and self.client.check(remote_file_path):
+                    logger.info(f"✓ Upload succeeded despite error (file verified): {Path(local_file_path).name}")
+                    return
+            except:
+                pass
+
+            # 如果确实失败了，记录错误
             logger.error(f"✗ Failed to upload {local_file_path}")
             logger.error(f"  Error: {e}")
-            logger.error(f"  Remote path was: {remote_file_path}")
+            if remote_file_path:
+                logger.error(f"  Remote path was: {remote_file_path}")
         finally:
             self.syncing.discard(local_file_path)
 
@@ -118,30 +130,76 @@ def test_webdav_permissions(client, remote_path):
     """测试 WebDAV 读写权限"""
     test_file = f"{remote_path.rstrip('/')}/.__webdav_test__.txt"
 
+    write_ok = False
+    read_ok = False
+    delete_ok = False
+
+    # 测试写入
     try:
-        # 测试写入
         logger.info("Testing WebDAV write permissions...")
-        client.upload_sync(
-            remote_path=test_file,
-            local_path='/dev/null'  # 创建空文件
-        )
-        logger.info("✓ Write permission OK")
+        # 创建临时测试文件
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as tmp:
+            tmp.write('webdav test')
+            tmp_path = tmp.name
 
-        # 测试读取
-        logger.info("Testing WebDAV read permissions...")
-        client.check(test_file)
-        logger.info("✓ Read permission OK")
-
-        # 清理测试文件
-        client.clean(test_file)
-        logger.info("✓ Delete permission OK")
-
-        return True
+        try:
+            client.upload_sync(
+                remote_path=test_file,
+                local_path=tmp_path
+            )
+            write_ok = True
+            logger.info("✓ Write permission OK")
+        finally:
+            import os
+            os.unlink(tmp_path)
 
     except Exception as e:
-        logger.error(f"✗ WebDAV permission test failed: {e}")
-        logger.error("Please check if your account has write permissions")
+        logger.warning(f"⚠ Write test threw exception: {e}")
+        # 即使抛出异常，也检查文件是否真的被创建了
+        try:
+            if client.check(test_file):
+                write_ok = True
+                logger.info("✓ Write actually succeeded (file exists despite error)")
+        except:
+            logger.error("✗ Write permission FAILED")
+
+    # 如果写入失败，不继续测试
+    if not write_ok:
+        logger.error("Cannot proceed without write permission")
         return False
+
+    # 测试读取
+    try:
+        logger.info("Testing WebDAV read permissions...")
+        exists = client.check(test_file)
+        if exists:
+            read_ok = True
+            logger.info("✓ Read permission OK")
+        else:
+            logger.warning("⚠ Cannot verify read permission")
+    except Exception as e:
+        logger.warning(f"⚠ Read test failed: {e}")
+        logger.info("→ Read permission might be limited, but not critical")
+
+    # 测试删除
+    try:
+        logger.info("Testing WebDAV delete permissions...")
+        client.clean(test_file)
+        delete_ok = True
+        logger.info("✓ Delete permission OK")
+    except Exception as e:
+        logger.warning(f"⚠ Delete test failed: {e}")
+        logger.info("→ Delete permission might be limited, but not critical")
+
+    # 只要能写入就认为测试通过
+    if write_ok:
+        logger.info("=" * 60)
+        logger.info("✓ WebDAV is ready for syncing")
+        logger.info("=" * 60)
+        return True
+
+    return False
 
 
 def initial_sync(client, local_path, remote_path):
