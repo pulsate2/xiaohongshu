@@ -233,8 +233,29 @@ def download_from_webdav(client, local_path, remote_path):
                     if item in ['.', '..']:
                         continue
 
+                    # 处理编码问题
+                    try:
+                        # 尝试不同的编码方式
+                        if isinstance(item, bytes):
+                            item = item.decode('utf-8')
+                        else:
+                            # 如果是字符串但可能有编码问题，尝试重新编码
+                            item.encode('utf-8').decode('utf-8')
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        try:
+                            # 尝试其他编码
+                            item = item.encode('latin1').decode('utf-8')
+                        except:
+                            logger.warning(f"⚠️ Skipping item with encoding issues: {repr(item)}")
+                            continue
+
                     full_path = f"{path.rstrip('/')}/{item}".replace('//', '/')
                     logger.debug(f"Processing item: {full_path}")
+
+                    # 跳过一些特殊目录（如果启用）
+                    if skip_special_dirs and item.lower() in ['dav', 'webdav', '_dav']:
+                        logger.debug(f"Skipping special directory: {full_path}")
+                        continue
 
                     # 检查是否是目录
                     try:
@@ -247,7 +268,14 @@ def download_from_webdav(client, local_path, remote_path):
                     except Exception as dir_e:
                         # 如果无法判断是否为目录，尝试作为文件处理
                         logger.debug(f"Cannot determine if {full_path} is directory, treating as file: {dir_e}")
-                        remote_files.append(full_path)
+                        # 先检查文件是否存在
+                        try:
+                            if client.check(full_path):
+                                remote_files.append(full_path)
+                            else:
+                                logger.debug(f"Skipping non-existent path: {full_path}")
+                        except:
+                            logger.debug(f"Cannot check existence of {full_path}, skipping")
             except Exception as e:
                 logger.error(f"❌ Error listing {path}: {e}")
 
@@ -278,10 +306,24 @@ def download_from_webdav(client, local_path, remote_path):
                     logger.debug(f"Skipping root path: {remote_file}")
                     continue
 
+                # 处理本地文件路径的编码问题
+                try:
+                    rel_path.encode('utf-8')  # 验证编码
+                except UnicodeEncodeError:
+                    try:
+                        rel_path = rel_path.encode('latin1').decode('utf-8')
+                    except:
+                        logger.warning(f"⚠️ Skipping file with path encoding issues: {remote_file}")
+                        continue
+
                 local_file = local_path / rel_path
                 
                 # 确保本地目录存在
-                local_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    local_file.parent.mkdir(parents=True, exist_ok=True)
+                except Exception as mkdir_e:
+                    logger.error(f"❌ Failed to create directory {local_file.parent}: {mkdir_e}")
+                    continue
 
                 logger.info(f"📥 Downloading: {remote_file}")
                 logger.info(f"   -> {local_file}")
@@ -302,16 +344,36 @@ def download_from_webdav(client, local_path, remote_path):
                     except Exception as size_e:
                         logger.debug(f"Cannot compare file sizes: {size_e}")
 
-                client.download_sync(
-                    remote_path=remote_file,
-                    local_path=str(local_file)
-                )
-                downloaded += 1
-                logger.info(f"✅ Downloaded: {local_file.name}")
+                # 尝试下载，处理可能的错误
+                try:
+                    client.download_sync(
+                        remote_path=remote_file,
+                        local_path=str(local_file)
+                    )
+                    downloaded += 1
+                    logger.info(f"✅ Downloaded: {local_file.name}")
+                except Exception as download_e:
+                    # 如果是 content-length 错误，尝试使用不同的下载方法
+                    if 'content-length' in str(download_e).lower():
+                        logger.warning(f"⚠️ Content-length error for {remote_file}, trying alternative method...")
+                        try:
+                            # 尝试使用 download 而不是 download_sync
+                            client.download(
+                                remote_path=remote_file,
+                                local_path=str(local_file)
+                            )
+                            downloaded += 1
+                            logger.info(f"✅ Downloaded (alternative method): {local_file.name}")
+                        except Exception as alt_e:
+                            logger.error(f"❌ Alternative download also failed for {remote_file}: {alt_e}")
+                            failed += 1
+                    else:
+                        logger.error(f"❌ Failed to download {remote_file}: {download_e}")
+                        failed += 1
 
             except Exception as e:
                 failed += 1
-                logger.error(f"❌ Failed to download {remote_file}: {e}")
+                logger.error(f"❌ Failed to process {remote_file}: {e}")
 
         logger.info("=" * 60)
         logger.info(f"📊 Download completed: {downloaded} successful, {failed} failed out of {len(remote_files)} files")
@@ -416,6 +478,7 @@ def main():
     webdav_password = os.getenv('WEBDAV_PASSWORD')
     local_path = os.getenv('SYNC_LOCAL_PATH', '/app/output')
     remote_path = os.getenv('SYNC_REMOTE_PATH', '/')
+    skip_special_dirs = os.getenv('SKIP_SPECIAL_DIRS', 'true').lower() == 'true'
 
     logger.info("=" * 60)
     logger.info("WebDAV Sync Service Starting")
@@ -436,7 +499,10 @@ def main():
         'webdav_login': webdav_username,
         'webdav_password': webdav_password,
         'webdav_timeout': 30,
-        'disable_check': False
+        'disable_check': False,
+        'webdav_headers': {
+            'Accept-Charset': 'utf-8'
+        }
     }
 
     try:

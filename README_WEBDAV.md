@@ -17,6 +17,8 @@
   - `download`: 仅从 WebDAV 下载文件到本地
   - `upload`: 仅上传本地文件到 WebDAV
   - `bidirectional`: 双向同步（先下载后上传）
+- `SKIP_SPECIAL_DIRS`: 是否跳过特殊目录（默认：true）
+  - 跳过 `dav`, `webdav`, `_dav` 等系统目录
 
 ## 启动流程
 1. 容器启动时，entrypoint.sh 会检查 WebDAV 配置
@@ -81,7 +83,17 @@ tail -f /var/log/webdav_sync.log
 2. 验证 WebDAV URL 格式
 3. 查看详细错误日志
 
-### 问题3：同步延迟
+### 问题3：中文文件名乱码
+**可能原因：**
+- WebDAV 服务器编码设置问题
+- 文件名传输过程中的编码转换
+
+**解决方案：**
+1. 脚本已自动处理多种编码情况
+2. 如果仍有问题，可以尝试设置 WebDAV 服务器的编码
+3. 检查 WebDAV 服务器的字符集配置
+
+### 问题4：同步延迟
 **可能原因：**
 - 文件监控延迟
 - 网络延迟
