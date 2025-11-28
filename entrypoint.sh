@@ -15,19 +15,34 @@ fi
 if [ -n "$WEBDAV_URL" ] && [ -n "$WEBDAV_USERNAME" ] && [ -n "$WEBDAV_PASSWORD" ]; then
     echo "Configuring WebDAV mount..."
 
+    # 修复 /etc/mtab 问题（容器中常见问题）
+    if [ ! -e /etc/mtab ]; then
+        echo "Creating /etc/mtab symlink..."
+        ln -sf /proc/mounts /etc/mtab
+    fi
+
     # 创建 davfs2 配置目录
     mkdir -p /root/.davfs2
+    mkdir -p /etc/davfs2
+    mkdir -p /var/run/mount.davfs
 
     # 配置 davfs2 secrets
     echo "$WEBDAV_URL $WEBDAV_USERNAME $WEBDAV_PASSWORD" > /root/.davfs2/secrets
     chmod 600 /root/.davfs2/secrets
+
+    # 创建 davfs2 配置文件以避免交互提示
+    cat > /etc/davfs2/davfs2.conf <<EOF
+use_locks 0
+ask_auth 0
+cache_size 50
+EOF
 
     # 创建挂载点
     mkdir -p /app/output
 
     # 挂载 WebDAV
     echo "Mounting WebDAV to /app/output..."
-    mount -t davfs "$WEBDAV_URL" /app/output -o rw,uid=0,gid=0 || {
+    mount.davfs "$WEBDAV_URL" /app/output -o rw,uid=0,gid=0,file_mode=0644,dir_mode=0755 || {
         echo "Warning: WebDAV mount failed. Continuing without mount..."
     }
 else
