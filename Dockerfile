@@ -22,6 +22,10 @@ COPY webdav_sync.py /webdav_sync.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# 复制测试脚本
+COPY test_sync.sh /test_sync.sh
+RUN chmod +x /test_sync.sh
+
 # 暴露 8080 端口
 EXPOSE 8080
 

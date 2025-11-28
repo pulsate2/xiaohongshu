@@ -202,27 +202,210 @@ def test_webdav_permissions(client, remote_path):
     return False
 
 
-def initial_sync(client, local_path, remote_path):
-    """初始同步 - 上传所有现有文件"""
-    logger.info(f"Starting initial sync of {local_path}")
+def download_from_webdav(client, local_path, remote_path):
+    """从 WebDAV 下载文件到本地"""
+    logger.info("=" * 60)
+    logger.info("📥 Starting download from WebDAV...")
+    logger.info("=" * 60)
+
     local_path = Path(local_path)
+    
+    # 确保本地目录存在
+    try:
+        local_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"✓ Local directory ready: {local_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to create local directory {local_path}: {e}")
+        return
+
+    try:
+        # 递归获取所有远程文件
+        remote_files = []
+
+        def list_remote_files(path):
+            """递归列出所有文件"""
+            try:
+                logger.info(f"🔍 Listing remote files in: {path}")
+                items = client.list(path)
+                logger.info(f"Found {len(items)} items in {path}")
+                
+                for item in items:
+                    if item in ['.', '..']:
+                        continue
+
+                    full_path = f"{path.rstrip('/')}/{item}".replace('//', '/')
+                    logger.debug(f"Processing item: {full_path}")
+
+                    # 检查是否是目录
+                    try:
+                        if client.is_dir(full_path):
+                            logger.debug(f"📁 Found directory: {full_path}")
+                            list_remote_files(full_path)
+                        else:
+                            logger.debug(f"📄 Found file: {full_path}")
+                            remote_files.append(full_path)
+                    except Exception as dir_e:
+                        # 如果无法判断是否为目录，尝试作为文件处理
+                        logger.debug(f"Cannot determine if {full_path} is directory, treating as file: {dir_e}")
+                        remote_files.append(full_path)
+            except Exception as e:
+                logger.error(f"❌ Error listing {path}: {e}")
+
+        # 从根路径开始列出文件
+        list_remote_files(remote_path)
+
+        if len(remote_files) == 0:
+            logger.info("📭 No files found on WebDAV server")
+            # 尝试列出根目录内容用于调试
+            try:
+                root_items = client.list(remote_path)
+                logger.info(f"Root directory contents: {root_items}")
+            except Exception as e:
+                logger.debug(f"Cannot list root directory: {e}")
+            return
+
+        logger.info(f"📊 Found {len(remote_files)} files on WebDAV to download")
+
+        # 下载每个文件
+        downloaded = 0
+        failed = 0
+        
+        for remote_file in remote_files:
+            try:
+                # 计算本地路径
+                rel_path = remote_file.replace(remote_path.rstrip('/'), '').lstrip('/')
+                if not rel_path:
+                    logger.debug(f"Skipping root path: {remote_file}")
+                    continue
+
+                local_file = local_path / rel_path
+                
+                # 确保本地目录存在
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+
+                logger.info(f"📥 Downloading: {remote_file}")
+                logger.info(f"   -> {local_file}")
+
+                # 检查本地文件是否已存在且大小相同
+                if local_file.exists():
+                    try:
+                        local_size = local_file.stat().st_size
+                        remote_info = client.info(remote_file)
+                        remote_size = int(remote_info.get('size', 0))
+                        
+                        if local_size == remote_size:
+                            logger.info(f"⏭️  Skipping {local_file.name} (already exists, same size)")
+                            downloaded += 1
+                            continue
+                        else:
+                            logger.info(f"🔄 Re-downloading {local_file.name} (size differs: local={local_size}, remote={remote_size})")
+                    except Exception as size_e:
+                        logger.debug(f"Cannot compare file sizes: {size_e}")
+
+                client.download_sync(
+                    remote_path=remote_file,
+                    local_path=str(local_file)
+                )
+                downloaded += 1
+                logger.info(f"✅ Downloaded: {local_file.name}")
+
+            except Exception as e:
+                failed += 1
+                logger.error(f"❌ Failed to download {remote_file}: {e}")
+
+        logger.info("=" * 60)
+        logger.info(f"📊 Download completed: {downloaded} successful, {failed} failed out of {len(remote_files)} files")
+        logger.info("=" * 60)
+
+    except Exception as e:
+        logger.error("=" * 60)
+        logger.error(f"❌ Failed to download from WebDAV: {e}")
+        logger.error("Continuing without download...")
+        logger.error("=" * 60)
+
+
+def upload_to_webdav(client, local_path, remote_path):
+    """上传本地文件到 WebDAV"""
+    logger.info("=" * 60)
+    logger.info("Starting upload to WebDAV...")
+    logger.info("=" * 60)
+
+    local_path = Path(local_path)
+    
+    # 检查本地目录是否存在
+    if not local_path.exists():
+        logger.warning(f"Local directory does not exist: {local_path}")
+        return
+    
+    if not local_path.is_dir():
+        logger.error(f"Local path is not a directory: {local_path}")
+        return
 
     files = list(local_path.rglob('*'))
     file_count = len([f for f in files if f.is_file()])
 
     if file_count == 0:
-        logger.info("No files to sync")
+        logger.info(f"No local files found in: {local_path}")
+        # 列出目录内容用于调试
+        try:
+            contents = list(local_path.iterdir())
+            logger.info(f"Directory contents: {[str(c) for c in contents]}")
+        except Exception as e:
+            logger.debug(f"Cannot list directory contents: {e}")
         return
 
-    logger.info(f"Found {file_count} files to sync")
+    logger.info(f"Found {file_count} local files to upload from: {local_path}")
+    
+    # 列出所有要上传的文件
+    for file_path in files:
+        if file_path.is_file():
+            logger.info(f"Queueing file for upload: {file_path}")
 
     handler = WebDAVSyncHandler(client, local_path, remote_path)
 
+    uploaded_count = 0
     for file_path in files:
         if file_path.is_file():
-            handler.upload_file(str(file_path))
+            try:
+                handler.upload_file(str(file_path))
+                uploaded_count += 1
+            except Exception as e:
+                logger.error(f"Failed to upload {file_path}: {e}")
 
-    logger.info("Initial sync completed")
+    logger.info(f"Upload completed: {uploaded_count}/{file_count} files uploaded")
+
+
+def initial_sync(client, local_path, remote_path, sync_mode='bidirectional'):
+    """
+    初始同步
+    sync_mode:
+      - 'bidirectional': 双向同步（先下载后上传）
+      - 'download': 仅下载
+      - 'upload': 仅上传
+    """
+    logger.info("=" * 60)
+    logger.info(f"🚀 Starting initial sync with mode: {sync_mode}")
+    logger.info(f"📁 Local path: {local_path}")
+    logger.info(f"☁️  Remote path: {remote_path}")
+    logger.info("=" * 60)
+
+    try:
+        if sync_mode in ['bidirectional', 'download']:
+            logger.info("📥 Starting download phase...")
+            download_from_webdav(client, local_path, remote_path)
+
+        if sync_mode in ['bidirectional', 'upload']:
+            logger.info("📤 Starting upload phase...")
+            upload_to_webdav(client, local_path, remote_path)
+
+        logger.info("=" * 60)
+        logger.info("✅ Initial sync completed successfully")
+        logger.info("=" * 60)
+    except Exception as e:
+        logger.error("=" * 60)
+        logger.error(f"❌ Initial sync failed: {e}")
+        logger.error("=" * 60)
+        # 不退出程序，继续运行监控
 
 
 def main():
@@ -280,7 +463,9 @@ def main():
     Path(local_path).mkdir(parents=True, exist_ok=True)
 
     # 初始同步
-    initial_sync(client, local_path, remote_path)
+    sync_mode = os.getenv('SYNC_MODE', 'download')  # 默认仅下载模式
+    logger.info(f"Starting initial sync with mode: {sync_mode}")
+    initial_sync(client, local_path, remote_path, sync_mode)
 
     # 启动文件监控
     event_handler = WebDAVSyncHandler(client, local_path, remote_path)

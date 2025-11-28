@@ -14,11 +14,25 @@ fi
 # 2. 启动 WebDAV 同步（如果配置了）
 if [ -n "$WEBDAV_URL" ] && [ -n "$WEBDAV_USERNAME" ] && [ -n "$WEBDAV_PASSWORD" ]; then
     echo "Starting WebDAV sync service..."
+    echo "WebDAV URL: $WEBDAV_URL"
+    echo "WebDAV Username: $WEBDAV_USERNAME"
+    echo "Local Sync Path: ${SYNC_LOCAL_PATH:-/app/output}"
+    echo "Remote Sync Path: ${SYNC_REMOTE_PATH:-/}"
+    echo "Sync Mode: ${SYNC_MODE:-download}"
+    
+    # 等待一下确保网络连接稳定
+    sleep 5
+    
     python3 /webdav_sync.py &
     WEBDAV_PID=$!
     echo "WebDAV sync started with PID: $WEBDAV_PID"
+    
+    # 等待几秒钟让 WebDAV 同步完成初始同步
+    echo "Waiting for initial WebDAV sync to complete..."
+    sleep 10
 else
     echo "WebDAV credentials not set. Skipping WebDAV sync..."
+    echo "Required variables: WEBDAV_URL, WEBDAV_USERNAME, WEBDAV_PASSWORD"
     WEBDAV_PID=""
 fi
 
